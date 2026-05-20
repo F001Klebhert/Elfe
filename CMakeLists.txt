@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(SuperNaturalResonator VERSION 1.0.0)
+project(PhysicalBloomMaster VERSION 1.0.0)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -9,7 +9,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(juce)
 
-juce_add_plugin(SuperNaturalResonator
+juce_add_plugin(PhysicalBloomMaster
     COMPANY_NAME "Your Name DSP"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
@@ -18,15 +18,15 @@ juce_add_plugin(SuperNaturalResonator
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
     PLUGIN_MANUFACTURER_CODE "YNDP"
-    PLUGIN_CODE "Snr1" 
+    PLUGIN_CODE "Pbm1" 
     FORMATS VST3
-    PRODUCT_NAME "SuperNatural Resonator")
+    PRODUCT_NAME "PhysicalBloom Master")
 
-target_sources(SuperNaturalResonator PRIVATE PluginProcessor.cpp)
+target_sources(PhysicalBloomMaster PRIVATE PluginProcessor.cpp)
 
-target_link_libraries(SuperNaturalResonator PRIVATE
+target_link_libraries(PhysicalBloomMaster PRIVATE
     juce::juce_audio_utils
     juce::juce_audio_processors)
 
-target_compile_definitions(SuperNaturalResonator PUBLIC
+target_compile_definitions(PhysicalBloomMaster PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0)
