@@ -4,25 +4,25 @@
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     
-    // Le volume de la résonance du corps (Volume du Wet)
+    // Intensité pure de la vibration sous l'instrument
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("resonance", 1), "Body Resonance", 
+        juce::ParameterID("body", 1), "Body Vibration", 
         juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.3f));
         
-    // La durée de l'épanouissement harmonique (Bloom/Sustain)
+    // Longueur de la résonance (Réponse de la pédale forte / Sympathetic Strings)
     layout.add(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID("bloom", 1), "Harmonic Bloom", 
-        juce::NormalisableRange<float>(0.1f, 0.95f, 0.01f), 0.6f));
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f));
         
-    // La couleur du corps : Bois chaud (bas) ou Métal/Plate (haut)
+    // Matériau du corps : 0 = Bois lourd et mat / 1.0 = Plaque de métal étincelante
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("tone", 1), "Acoustic Tone (Hz)", 
-        juce::NormalisableRange<float>(800.0f, 12000.0f, 10.0f, 0.3f), 4500.0f));
+        juce::ParameterID("tone", 1), "Material Tone", 
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.6f));
         
     return layout;
 }
 
-SuperNaturalResonator::SuperNaturalResonator()
+PhysicalBloomMaster::PhysicalBloomMaster()
     : juce::AudioProcessor(juce::AudioProcessor::BusesProperties()
                      .withInput("Input", juce::AudioChannelSet::stereo(), true)
                      .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
@@ -30,36 +30,35 @@ SuperNaturalResonator::SuperNaturalResonator()
 {
 }
 
-void SuperNaturalResonator::prepareToPlay(double sampleRate, int samplesPerBlock) {
-    resonator.prepare(sampleRate);
+void PhysicalBloomMaster::prepareToPlay(double sampleRate, int samplesPerBlock) {
+    bloomEngine.prepare(sampleRate);
 }
 
-void SuperNaturalResonator::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
+void PhysicalBloomMaster::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
     juce::ScopedNoDenormals noDenormals;
 
     int numSamples = buffer.getNumSamples();
     auto* channelDataL = buffer.getWritePointer(0);
     auto* channelDataR = buffer.getWritePointer(1);
 
-    float resVol = apvts.getRawParameterValue("resonance")->load();
+    float bodyVol = apvts.getRawParameterValue("body")->load();
     float bloom = apvts.getRawParameterValue("bloom")->load();
     float tone = apvts.getRawParameterValue("tone")->load();
 
     for (int i = 0; i < numSamples; ++i) {
         float inL = channelDataL[i];
         float inR = channelDataR[i];
-        float resL = 0.0f, resR = 0.0f;
+        float bloomL = 0.0f, bloomR = 0.0f;
 
-        // Le moteur génère la résonance organique
-        resonator.process(inL, inR, resL, resR, bloom, tone);
+        // Génération du nuage harmonique (Zéro traitement sur le signal inL/inR d'origine)
+        bloomEngine.process(inL, inR, bloomL, bloomR, bloom, tone);
 
-        // LE PRINCIPE ABSOLU : Le Timbre Dry n'est JAMAIS touché.
-        // On glisse simplement le nuage de réflexions sous la note.
-        channelDataL[i] = inL + (resL * resVol);
-        channelDataR[i] = inR + (resR * resVol);
+        // Sommation parallèle absolue. Le timbre original est respecté à 100%.
+        channelDataL[i] = inL + (bloomL * bodyVol);
+        channelDataR[i] = inR + (bloomR * bodyVol);
     }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() {
-    return new SuperNaturalResonator();
+    return new PhysicalBloomMaster();
 }
