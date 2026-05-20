@@ -4,24 +4,17 @@
 #include <vector>
 #include <cmath>
 
-// Ligne de délai fractionnelle avec interpolation (pour la résonance type Plate)
-class FractionalDelay {
+// Filtre All-Pass pur (Zéro écho, 100% "Smearing" de transitoire)
+class DiffuserAP {
 public:
-    void prepare(double sr, float maxDelayMs) {
-        buffer.assign(static_cast<size_t>(sr * (maxDelayMs / 1000.0f)) + 100, 0.0f);
+    void prepare(double sr, float delayMs) {
+        buffer.assign(static_cast<size_t>(sr * (delayMs / 1000.0f)) + 10, 0.0f);
         writePos = 0;
     }
-    float process(float input, float delaySamples) {
-        buffer[writePos] = input;
-        float readPos = static_cast<float>(writePos) - delaySamples;
-        if (readPos < 0.0f) readPos += static_cast<float>(buffer.size());
-        
-        int i0 = static_cast<int>(readPos);
-        int i1 = (i0 + 1) % buffer.size();
-        float frac = readPos - static_cast<float>(i0);
-        
-        float out = buffer[i0] + frac * (buffer[i1] - buffer[i0]);
-        
+    float process(float in) {
+        float delayed = buffer[writePos];
+        float out = -0.6f * in + delayed;
+        buffer[writePos] = in + 0.6f * delayed;
         writePos++;
         if (writePos >= buffer.size()) writePos = 0;
         return out;
@@ -31,87 +24,98 @@ private:
     int writePos = 0;
 };
 
-// Filtre d'étouffement acoustique (Damping du bois ou du métal)
-class DampingFilter {
+// Ligne de délai sans résonance
+class SimpleDelay {
 public:
-    void prepare(double sr) { sampleRate = sr; z1 = 0.0f; }
-    void setTone(float freq) {
-        alpha = std::exp(-6.28318530718f * freq / static_cast<float>(sampleRate));
+    void prepare(double sr, float delayMs) {
+        buffer.assign(static_cast<size_t>(sr * (delayMs / 1000.0f)) + 10, 0.0f);
+        writePos = 0;
     }
     float process(float in) {
-        z1 = in * (1.0f - alpha) + z1 * alpha;
-        return z1;
+        float out = buffer[writePos];
+        buffer[writePos] = in;
+        writePos++;
+        if (writePos >= buffer.size()) writePos = 0;
+        return out;
+    }
+private:
+    std::vector<float> buffer;
+    int writePos = 0;
+};
+
+// Filtre radical pour sculpter le "Tone" du bois ou du métal
+class ToneFilter {
+public:
+    void prepare(double sr) { sampleRate = sr; z1 = 0.0f; }
+    void setFreq(float freq, bool isLP) {
+        float w0 = 6.28318530718f * freq / static_cast<float>(sampleRate);
+        alpha = w0 / (1.0f + w0);
+        isLowPass = isLP;
+    }
+    float process(float in) {
+        z1 = z1 + alpha * (in - z1);
+        return isLowPass ? z1 : (in - z1);
     }
 private:
     float sampleRate = 44100.0f, alpha = 0.0f, z1 = 0.0f;
+    bool isLowPass = true;
 };
 
-// Moteur de résonance (Réseau FDN 4x4 Hautes Densités)
-class AcousticBodyResonator {
+// Moteur de résonance physique de type "Plate / Soundboard"
+class PhysicalBloomEngine {
 public:
     void prepare(double sr) {
-        sampleRate = sr;
-        // Temps très courts, basés sur des nombres premiers pour créer l'illusion
-        // de la résonance du corps sans créer une queue de cathédrale.
-        delayL1.prepare(sr, 50.0f); baseTime1 = 11.3f * (sr / 1000.0f);
-        delayL2.prepare(sr, 50.0f); baseTime2 = 17.1f * (sr / 1000.0f);
-        delayL3.prepare(sr, 50.0f); baseTime3 = 23.3f * (sr / 1000.0f);
-        delayL4.prepare(sr, 50.0f); baseTime4 = 31.7f * (sr / 1000.0f);
+        // Temps ultra-courts (<15ms) pour interdire la sensation de "pièce"
+        ap1L.prepare(sr, 2.1f); ap2L.prepare(sr, 3.5f); ap3L.prepare(sr, 5.8f); ap4L.prepare(sr, 8.4f);
+        ap1R.prepare(sr, 2.5f); ap2R.prepare(sr, 3.9f); ap3R.prepare(sr, 6.1f); ap4R.prepare(sr, 8.9f);
         
-        damp1.prepare(sr); damp2.prepare(sr); damp3.prepare(sr); damp4.prepare(sr);
-        lfoPhase = 0.0f;
+        delL.prepare(sr, 12.0f); delR.prepare(sr, 13.0f);
+        
+        toneFilterL.prepare(sr); toneFilterR.prepare(sr);
+        antiMudL.prepare(sr); antiMudL.setFreq(150.0f, false); // Coupe-bas à 150Hz
+        antiMudR.prepare(sr); antiMudR.setFreq(150.0f, false);
     }
 
-    void process(float inL, float inR, float& outL, float& outR, float sustain, float tone) {
-        float input = (inL + inR) * 0.5f; // On excite la caisse de résonance avec le centre
+    void process(float inL, float inR, float& outL, float& outR, float bloom, float tone) {
+        // La courbe exponentielle magique pour que le Bloom soit parfait de 0 à 100%
+        float feedback = 0.3f + (0.68f * std::pow(bloom, 0.6f));
         
-        damp1.setTone(tone); damp2.setTone(tone); damp3.setTone(tone); damp4.setTone(tone);
+        // Configuration radicale du Tone (De 400Hz sourd à 12000Hz brillant)
+        float freq = 400.0f + std::pow(tone, 2.0f) * 11600.0f;
+        toneFilterL.setFreq(freq, true);
+        toneFilterR.setFreq(freq, true);
+
+        // Boucle de résonance physique Gauche
+        float loopInL = inL + (fbR * feedback); // Cross-feedback
+        float washL = ap4L.process(ap3L.process(ap2L.process(ap1L.process(loopInL))));
+        fbL = toneFilterL.process(delL.process(washL));
         
-        // Modulation très subtile pour l'effet "Plate / Harmonic Bloom"
-        lfoPhase += 2.0f * 3.14159265359f * 1.5f / sampleRate; // 1.5 Hz
-        if (lfoPhase > 6.28318530718f) lfoPhase -= 6.28318530718f;
+        // Boucle de résonance physique Droite (avec inversion de phase pour la chaleur stéréo)
+        float loopInR = inR - (fbL * feedback); // Inversion pour éviter les résonances métalliques statiques
+        float washR = ap4R.process(ap3R.process(ap2R.process(ap1R.process(loopInR))));
+        fbR = toneFilterR.process(delR.process(washR));
         
-        float mod = std::sin(lfoPhase) * 3.0f; 
-        
-        // Lecture des délais (Feedback)
-        float read1 = delayL1.process(fb1, baseTime1 + mod);
-        float read2 = delayL2.process(fb2, baseTime2 - mod);
-        float read3 = delayL3.process(fb3, baseTime3 + mod * 0.5f);
-        float read4 = delayL4.process(fb4, baseTime4 - mod * 0.5f);
-        
-        // Matrice de Hadamard (Diffusion ultrarapide de l'air)
-        float v1 = read1 + read2 + read3 + read4;
-        float v2 = read1 - read2 + read3 - read4;
-        float v3 = read1 + read2 - read3 - read4;
-        float v4 = read1 - read2 - read3 + read4;
-        
-        // Damping et renvoi dans la boucle
-        fb1 = input + damp1.process(v1) * 0.5f * sustain;
-        fb2 = input + damp2.process(v2) * 0.5f * sustain;
-        fb3 = input + damp3.process(v3) * 0.5f * sustain;
-        fb4 = input + damp4.process(v4) * 0.5f * sustain;
-        
-        outL = read1 - read3;
-        outR = read2 - read4;
+        // On nettoie les basses du corps de résonance pour ne pas salir le mix
+        outL = antiMudL.process(fbL);
+        outR = antiMudR.process(fbR);
     }
 private:
-    FractionalDelay delayL1, delayL2, delayL3, delayL4;
-    DampingFilter damp1, damp2, damp3, damp4;
-    float fb1 = 0, fb2 = 0, fb3 = 0, fb4 = 0;
-    float baseTime1, baseTime2, baseTime3, baseTime4;
-    float sampleRate = 44100.0f, lfoPhase = 0.0f;
+    DiffuserAP ap1L, ap2L, ap3L, ap4L, ap1R, ap2R, ap3R, ap4R;
+    SimpleDelay delL, delR;
+    ToneFilter toneFilterL, toneFilterR, antiMudL, antiMudR;
+    float fbL = 0.0f, fbR = 0.0f;
 };
 
-class SuperNaturalResonator : public juce::AudioProcessor {
+class PhysicalBloomMaster : public juce::AudioProcessor {
 public:
-    SuperNaturalResonator();
-    ~SuperNaturalResonator() override = default;
+    PhysicalBloomMaster();
+    ~PhysicalBloomMaster() override = default;
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override { return new juce::GenericAudioProcessorEditor(*this); }
     bool hasEditor() const override { return true; }
-    const juce::String getName() const override { return "SuperNatural Resonator"; }
+    const juce::String getName() const override { return "PhysicalBloom Master"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -125,6 +129,6 @@ public:
     void setStateInformation(const void*, int) override {}
 private:
     juce::AudioProcessorValueTreeState apvts;
-    AcousticBodyResonator resonator;
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SuperNaturalResonator)
+    PhysicalBloomEngine bloomEngine;
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PhysicalBloomMaster)
 };
